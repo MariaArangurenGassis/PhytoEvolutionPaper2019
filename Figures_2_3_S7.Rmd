@@ -1,0 +1,583 @@
+---
+title: "Figures2,3 and S7"
+author: "Maria Aranguren-Gassis, Colin T. Kremer"
+date: "22/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+
+#FIX TIME ZONE
+options(tz="UTC")
+Sys.setenv(TZ="UTC")
+
+#### Load libraries ####
+library(lubridate)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(dplyr)
+library(gridExtra)
+library(bbmle)
+library(tidyverse)
+require(ggplot2)
+require(dplyr)
+
+```
+
+
+##### Evolutionary rescue analyses 34ºC 100 generations#####
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+## functions
+
+logit<-function(x){log(x/(1-x))}
+expit<-function(x){exp(x)/(1+exp(x))}
+
+get.R2<-function(obs,pred){
+  1-sum((obs-pred)^2)/sum((obs-mean(obs))^2)
+}
+
+exp.gr.2<-function(N0,phi,r1,r2,x){
+  N0+log(phi*exp(r1*x)+(1-phi)*exp(r2*x))
+}
+
+# model of exponential decline w/fixed floor
+death<-function(x,b,tx){
+  a<-(log(0.39)-b)/(tx)
+  y <- ifelse(x <= tx, a*x+b, log(0.39))
+  y
+}
+
+```
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+#load data
+
+data<-read.csv("Data_TPC_100generations.csv",stringsAsFactors = F)
+data<-data[,-1]
+dat<-data[data$temperature %in% c(34) & data$strain!="Collection",]
+head(dat)
+
+# set up date column:
+dat$date2<-mdy_hm(dat$date)
+
+# naive calculation of delta time:
+min.time<-min(dat$date2,na.rm = T)
+dat$dtime<-difftime(dat$date2,min.time,units=c("days"))
+dat$rep.well<-as.factor(dat$rep.well)
+#head(dat)
+
+# treatment level delta time calculation
+dat2 <- dat %>% group_by(strain,temperature,nitrate,rep.well) %>% summarise(min.t=min(date2),max.t=max(dtime))
+dat2$block <- ifelse(dat2$max.t > 12,"B","A")
+dat2 <- merge(dat,dat2)
+dat2$dtime <- as.numeric(difftime(dat2$date2,dat2$min.t,units = "days"))
+dat2$rep.well<-as.factor(dat2$rep.well)
+dat2$ln.fluor<-log(dat2$fluor)
+#dat2$abd<-log(dat2$fluor-0.39)
+dat2$evoln<-ifelse(grepl(dat2$strain,pattern = "L1"),"L1","5")
+dat2<-dat2[dat2$nitrate=='L1',]
+
+# remove outlier:
+#dat2<-dat2[-which(dat2$strain=='5-2' & dat2$evoln=='5' & dat2$nitrate=='L1' & dat2$dtime>5 & dat2$abd<5 & dat2$temperature==31),]
+head(dat2)
+
+```
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+#### Fit models ####
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+
+# make unique id column for each strain/replicate
+dat2$id<-paste(dat2$temperature,dat2$strain,dat2$rep.well)
+uids<-unique(dat2$id)
+
+# scroll through each strain/replicate, and fit three competing models:
+i<-1
+out<-NULL
+pred.mat<-NULL
+pred.mat.d<-NULL
+pred.mat.best<-NULL
+for(i in 1:length(uids)){
+  print(i)
+  
+  tmp<-dat2[dat2$id==uids[i],]
+  tmp<-tmp[order(tmp$dtime),]
+
+  # initial guesses:
+  N0.g<-tmp$ln.fluor[1]
+  phi.g<-logit(0.99)
+  r1.g <- -0.38
+  r2.g <- 0.4
+  #curve(exp.gr.2(N0.g,phi=expit(phi.g),r1.g,r2.g,x),0,10,add=T,col='gray')
+  
+  # fit single strain exponential model
+  m1<-mle2(ln.fluor~dnorm(mean=N0+r*dtime,sd=exp(s)),start=list(N0=N0.g,r=0,s=exp(0)),data=tmp)
+  cfs1<-coef(m1)
+  
+  # fit two strain exponential model
+  m2<-mle2(ln.fluor~dnorm(mean=exp.gr.2(N0,expit(ph),r1,r2,dtime),sd=exp(s)),start=list(N0=N0.g,ph=phi.g,r1=r1.g,r2=r2.g,s=0),data=tmp)
+  cfs2<-coef(m2)
+
+  # model of exponential decay plus non-zero fluorescence of sterile media
+  m3<-mle2(ln.fluor~dnorm(mean=death(x=dtime,b = bval,tx=txval),sd=exp(s)),start=list(bval=tmp$ln.fluor[1],txval=2,s=exp(0)),data=tmp,control=list(maxit=1000))
+  cfs3<-coef(m3)
+
+  # get R2 values:
+  m1.R2<-get.R2(m1@data$ln.fluor,predict(m1))
+  m2.R2<-get.R2(m2@data$ln.fluor,predict(m2))
+  m3.R2<-get.R2(m3@data$ln.fluor,predict(m3))
+  
+  # format coefficients and other metrics for each model:
+  res1<-melt(cfs1)
+  res1<-data.frame(model="exp",parameter=c(row.names(res1),"AIC","R2"),values=c(unlist(res1),AIC(m1),m1.R2))
+  
+  res2<-melt(cfs2)
+  res2<-data.frame(model="exp.2",parameter=c(row.names(res2),"AIC","R2"),values=c(unlist(res2),AIC(m2),m2.R2))
+  
+  res3<-melt(cfs3)
+  res3<-data.frame(model="death",parameter=c(row.names(res3),"AIC","R2"),values=c(unlist(res3),AIC(m3),m3.R2))
+  
+  # save coefficients  
+  out<-rbind(out,data.frame(id=uids[i],rbind(res1,res2,res3)))
+  
+  # two strain model's predictions:
+  fitted<-data.frame(id=uids[i],tmp[,c('strain','temperature','rep.well','dtime')],ln.fluor=predict(m2))
+  pred.mat<-rbind(pred.mat,fitted)
+  
+  # mortality model's predictions
+  fitted2<-data.frame(id=uids[i],tmp[,c('strain','temperature','rep.well','dtime')],ln.fluor=predict(m3))
+  pred.mat.d<-rbind(pred.mat.d,fitted2)
+  
+  # best model's predictions
+  if(AIC(m2)<AIC(m3)){
+    fitted2<-data.frame(id=uids[i],tmp[,c('strain','temperature','rep.well','dtime')],ln.fluor=predict(m2),model='m2')
+    pred.mat.best<-rbind(pred.mat.best,fitted2)
+  }else{
+    fitted2<-data.frame(id=uids[i],tmp[,c('strain','temperature','rep.well','dtime')],ln.fluor=predict(m3),model='m3')
+    pred.mat.best<-rbind(pred.mat.best,fitted2)
+  }
+  
+}
+
+# format coefficient output:
+out2<-dcast(out,id+model~parameter,value.var = "values")
+out3<-merge(out2,out2 %>% group_by(id) %>% summarise(min.AIC=min(AIC)))
+out3$dAIC<-out3$AIC-out3$min.AIC
+out3$evoln<-ifelse(grepl(pattern = "L1",out3$id),"L1","5")
+head(out3)
+
+# Flip one entry, exchanging 1 for 2, w.l.o.g. (designation as strain 1 vs. 2 is arbitrary)
+out3$r1<-ifelse(out3$ph<0,out3$r1*-1,out3$r1)
+out3$r2<-ifelse(out3$ph<0,out3$r2*-1,out3$r2)
+out3$ph<-ifelse(out3$ph<0,out3$ph*-1,out3$ph)
+
+
+# best fit models for each line/strain/replicate:
+out3[out3$dAIC==0,c('evoln','model','R2')]
+
+table(out3[out3$dAIC==0,c('evoln','model')])
+
+#       model
+# evoln exp exp.2 death
+#   5    2    10     4
+#   L1   2    10     4
+
+# Out of 16 possible trajectories for each set of evolution conditions,
+#   - two are better described as single strain exponentials
+#   - four are indistinguishable from exponential death of a single, intolerant strain
+
+# Which are the good fits of the two strain model?
+#   - based on AIC comparison, and excluding fits where both strains have 
+#     positive growth rates
+#   - focus on these subsequently
+
+joe<-out3[out3$dAIC==0 & out3$model=="exp.2" & !(out3$r1>0 & out3$r2>0),]
+
+
+# look at all cases where the two strain model was NOT the best:
+out3[out3$dAIC==0 & out3$model!="exp.2",]
+out3[out3$dAIC==0 & grepl(pattern = 'L1-3',out3$id),]
+
+
+```
+#Figure S7
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+#### Visualize the results ####
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+# extract predicted curves where the 2-strain model was best:
+pred.mat2<-pred.mat[pred.mat$id %in% as.character(unique(joe$id)),]
+pred.mat2$type<-'Fitted' #this was "Predicted"
+dat2$type<-'Observed'
+dat.plt<-rbind(dat2[,names(pred.mat2)],pred.mat2)
+dat.plt$evoln<-ifelse(grepl(pattern = "L1",dat.plt$strain),"L1","5")
+head(dat.plt)
+
+head(dat.plt)
+dat.plt$strain.num<-as.vector(sapply(dat.plt$strain,FUN = function(x) strsplit(x,"-")[[1]][2]))
+
+
+#add a different column so the panel titles are correct
+
+dat.plt$EvolTreatment=c(length(dat.plt$evoln))
+for (i in 1:(length(dat.plt$evoln))){
+  dat.plt$EvolTreatment[i]<-if(dat.plt$evoln[i]=="5"){
+  "Evolved at N-limited"} else {"Evolved at N-replete"}}
+
+gEvolResc_Col<-ggplot(dat.plt,aes(x=dtime,y=ln.fluor))+
+  geom_point(aes(colour=strain.num,shape=rep.well))+
+  geom_line(aes(linetype=type,colour=strain.num,group=factor(paste(strain,rep.well))))+
+  geom_hline(yintercept = log(0.39))+
+  scale_x_continuous("Time (days)",breaks = seq(0,10,2))+
+  scale_y_continuous("ln (Fluorescence)")+
+  scale_color_brewer(type="qual",palette = 3)+
+  facet_grid(type~EvolTreatment)+
+  theme_bw()+
+  ggtitle("Growth at 34ºC (~100 generations)")+
+  theme(strip.background = element_rect(fill="white"),text=element_text(size=15, family = "Times New Roman"), legend.position="bottom",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"))
+
+#plot export
+
+png(filename = "Evol_Rescue_GrowthRates_color.png",units = "mm",res = 600, height = 200, width=200) #creates a ong file with the size specify  (res is uasually 300 for print)
+
+gEvolResc_Col #call the plot for the png
+
+dev.off() #close the png
+
+gEvolResc_Col
+
+```
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+#Control population
+
+datC<-data[data$temperature %in% c(34) & data$strain=="Collection",]
+
+# set up date column:
+datC$date2<-mdy_hm(datC$date)
+
+# naive calculation of delta time:
+min.timeC<-min(datC$date2,na.rm = T)
+datC$dtime<-difftime(datC$date2,min.timeC,units=c("days"))
+datC$rep.well<-as.factor(datC$rep.well)
+#head(dat)
+
+# treatment level delta time calculation
+datC2 <- datC %>% group_by(strain,temperature,nitrate,rep.well) %>% summarise(min.t=min(date2),max.t=max(dtime))
+datC2$block <- ifelse(datC2$max.t > 12,"B","A")
+datC2 <- merge(datC,datC2)
+datC2$dtime <- as.numeric(difftime(datC2$date2,datC2$min.t,units = "days"))
+datC2$rep.well<-as.factor(datC2$rep.well)
+datC2$ln.fluor<-log(datC2$fluor)
+#datC2$evoln<-ifelse(grepl(datC2$strain,pattern = "L1"),"L1","5")
+datC2<-datC2[datC2$nitrate=='L1',]
+
+
+# Break up data by strain, then fit the specified model to each piece and return a list
+datC2$id<-paste(datC2$strain,datC2$rep.well)
+datC2$id<-as.character(datC2$id)
+models100gC <- dlply(datC2, "id", function(df) 
+  lm(ln.fluor ~ dtime, data = df))
+lapply(models100gC,anova)
+
+
+
+# Apply coef to each model and return a data frame
+models100gC<-ldply(models100gC, coef)
+
+names(models100gC)<-c("id","intercept","GR")
+
+```
+
+
+##### 34ºC challenge growth rates#####
+
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+#### Growth rate estimates ####
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+
+#200 generations
+
+# Load data
+
+dat200g<-read.csv("34_Challenge_200generations.csv",sep=";",stringsAsFactors = F) #I have substituted all absorbance with 0 or negative values by 0.001
+
+
+# set up date column:
+dat200g$date200g2<-mdy_hm(dat200g$date)
+# naive calculation of delta time:
+min.time200g<-min(dat200g$date2,na.rm = T)
+dat200g$dtime<-difftime(dat200g$date2,min.time200g,units=c("days"))
+dat200g<-filter(dat200g,Abs>0)
+dat200g$lnAbs<-log(dat200g$Abs)
+dat200g$id<-paste(dat200g$strain,dat200g$rep.well)
+dat200g$id<-as.character(dat200g$id)
+
+
+# Break up data by strain, then fit the specified model to each piece and return a list
+models200g <- dlply(dat200g, "id", function(df) 
+  lm(lnAbs ~ dtime, data = df))
+
+lapply(models200g,summary)
+
+# Apply coef to each model and return a data frame
+models200g<-ldply(models200g, coef)
+
+names(models200g)<-c("id","intercept","GR")
+
+
+dat200g_plot<-dat200g[,-1]
+#dat200g_plot<-dat200g[dat200g$temperature %in% c(34) & dat200g$strain!="Collection",]
+dat200g_plot<-dat200g[dat200g$temperature %in% c(34),]
+head(dat200g_plot)
+
+# set up date column:
+dat200g_plot$date2<-mdy_hm(dat200g_plot$date)
+
+# naive calculation of delta time:
+min.time200g<-min(dat200g_plot$date2,na.rm = T)
+dat200g_plot$dtime<-difftime(dat200g_plot$date2,min.time200g,units=c("days"))
+dat200g_plot$rep.well<-as.factor(dat200g_plot$rep.well)
+#head(dat)
+
+# treatment level delta time calculation
+dat200g_plot2 <- dat200g_plot %>% group_by(strain,temperature,nitrate,rep.well) %>% summarise(min.t=min(date2),max.t=max(dtime))
+dat200g_plot2$block <- ifelse(dat200g_plot2$max.t > 12,"B","A")
+dat200g_plot2 <- merge(dat200g_plot,dat200g_plot2)
+dat200g_plot2$dtime <- as.numeric(difftime(dat200g_plot2$date2,dat200g_plot2$min.t,units = "days"))
+dat200g_plot2$rep.well<-as.factor(dat200g_plot2$rep.well)
+dat200g_plot2<-filter(dat200g_plot2,Abs>0)
+dat200g_plot2$ln.Abs<-log(dat200g_plot2$Abs)
+dat200g_plot2$evoln<-ifelse(grepl(dat200g_plot2$strain,pattern = "L1"),"L1","5")
+dat200g_plot2<-dat200g_plot2[dat200g_plot2$nitrate=='L1',]
+
+```
+
+#Figure 3
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+Observations100G<-filter(dat.plt,dat.plt$type=="Observed")
+Observations100G<-select(Observations100G,strain,temperature,rep.well,dtime,ln.fluor,evoln,strain.num)
+Observations100GControls<-select(datC2,strain,temperature,rep.well,dtime,ln.fluor)
+Observations100GControls$evoln<-c(rep("C",length(Observations100GControls$strain)))
+Observations100GControls$strain.num<-c(rep("1",length(Observations100GControls$strain)))
+Observations100G.All<-bind_rows(Observations100G,Observations100GControls)
+
+Observations200G<-select(dat200g_plot2,strain,temperature,rep.well,dtime,lnAbs,evoln)
+Observations200G$strain.num<-as.vector(sapply(Observations200G$strain,FUN = function(x) strsplit(x,"-")[[1]][2]))
+Observations200G<-filter(Observations200G,Observations200G$dtime<10)
+
+#############
+#Plot 100 generations
+#############
+
+
+Observations100G.All$evoln <- factor(Observations100G.All$evoln,levels = c("C","L1","5"),ordered = TRUE,labels = c("Control","High N","Low N")) #for ordering panels
+gGR100G<-ggplot(Observations100G.All,aes(x=dtime,y=ln.fluor))+
+  geom_point(aes(colour=evoln,shape=strain))+
+  geom_line(aes(linetype=strain,colour=evoln,group=factor(paste(strain,rep.well))))+
+  geom_hline(yintercept = log(0.39))+
+  #scale_x_continuous("Time (days)",breaks = seq(0,10,2))+
+  scale_y_continuous("ln (Fluorescence)")+
+  #scale_x_continuous("",breaks = seq(0,10,2))+
+  #scale_y_continuous("")+
+  #scale_color_brewer(type="seq",palette = "purpples")+
+  scale_color_manual(values=c("black","#009E73","#E69F00"))+
+  facet_wrap(~evoln)+
+  theme_bw()+
+  #ggtitle("Growth at 34ºC (~100 generations)")+
+  #theme(strip.background = element_blank(), strip.text.x = element_blank(),text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"))
+theme(strip.background = element_blank(),text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"),axis.title.x=element_blank(), axis.text.x=element_blank())
+
+#plot export
+
+png(filename = "Evol_Rescue_GrowthRates_100G.png",units = "mm",res = 300, height = 100, width=200) #creates a ong file with the size specify  (res is uasually 300 for print)
+
+gGR100G #call the plot for the png
+
+dev.off() #close the png
+
+gGR100G
+
+#############
+#Plot 200 generations
+#############
+
+for(a in c(1:length(Observations200G$rep.well))){
+  if(Observations200G$strain[a]=="Collection"|Observations200G$rep.well[a]=="ANCESTRAL")
+                           Observations200G$evoln[a]<-"C"
+  else
+    Observations200G$evoln[a]<-Observations200G$evoln[a]
+  }
+
+
+Observations200G$evoln <- factor(Observations200G$evoln,levels = c("C","L1","5"),ordered = TRUE,labels = c("Control","High N","Low N")) #for ordering panels
+
+gGR200G<-ggplot(Observations200G,aes(x=dtime,y=lnAbs))+
+  geom_point(aes(colour=evoln,shape=strain))+
+  geom_line(aes(linetype=strain,colour=evoln,group=factor(paste(strain,rep.well))))+
+  geom_hline(yintercept = log(0.001))+
+  scale_x_continuous("Time (days)",breaks = seq(0,10,2))+
+  scale_y_continuous("ln (Optical density)")+
+  #scale_x_continuous("",breaks = seq(0,10,2))+
+  #scale_y_continuous("")+
+  #scale_color_brewer(type="seq",palette = "purpples")+
+  scale_color_manual(values=c("black","#009E73","#E69F00"))+
+  facet_wrap(~evoln)+
+  theme_bw()+
+  #ggtitle("Growth at 34ºC (~200 generations)")+
+  #theme(strip.background = element_blank(), strip.text.x = element_blank(),text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"))
+theme(strip.background = element_blank(),text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"),strip.text.x = element_blank())
+
+#plot export
+
+png(filename = "Evol_Rescue_GrowthRates_200G.png",units = "mm",res = 300, height = 100, width=200) #creates a ong file with the size specify  (res is uasually 300 for print)
+
+gGR200G #call the plot for the png
+
+dev.off() #close the png
+
+gGR200G
+
+```
+
+#Figure 2
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+# mergin all data: 100G evolved+100G controls + >200G evolved + Ancestrals
+# - 100G evolved: joe2
+# - 100G controls: models100gC
+# - 200G: models200g
+
+#all in the same format
+
+joe2<-melt(joe[,c('id','evoln','r1','r2')],id.vars = c('id','evoln'))
+joe2$HTtolerance<-ifelse(joe2$variable=='r1','Non resistant','Resistant')
+l<-length(joe2$id)
+joe2$generations<-rep("100 generations",l)
+colnames(joe2)[4]<-c("GR")
+joe2<-joe2[,-3]
+#joe2<-joe2[,-4]
+
+models100gC<-models100gC[,-2]
+models100gC$evoln<-rep("Control",length(models100gC$id))
+models100gC$HTtolerance<-rep("Non resistant",length(models100gC$id))
+models100gC$generations<-rep("100 generations",length(models100gC$id))
+
+
+models200g<-models200g[,-2]
+models200g$evoln<-ifelse(grepl("ANCESTRAL",models200g$id),"Control",ifelse(grepl("L1",models200g$id),"L1",ifelse(grepl("Collection",models200g$id),"Control","5")))
+models200g$HTtolerance<-ifelse(models200g$id%in%c("L1-1 1","L1-1 2","L1-2 1","L1-2 2","L1-3 1","L1-3 2"),"Resistant","Non resistant")
+models200g$generations<-rep("200 generations",length(models200g$id))
+
+#reorder columns
+joe2<-joe2[c("id","generations","evoln","HTtolerance","GR")]
+models100gC<-models100gC[c("id","generations","evoln","HTtolerance","GR")]
+models200g<-models200g[c("id","generations","evoln","HTtolerance","GR")]
+
+#All data in pne data frame
+All.data<-bind_rows(joe2,models100gC)
+All.data<-bind_rows(All.data,models200g)
+All.data$generations=factor(All.data$generations,levels = c("100 generations","200 generations"))
+
+
+
+#########
+###Two plots, one for each number of generations
+#########
+
+##100Generations
+
+Data100G<-filter(All.data,generations=="100 generations")
+Data100G$evoln <- factor(Data100G$evoln,levels = c("Control","L1","5"),ordered = TRUE) #for ordering boxes
+
+boxplot100G<-ggplot(Data100G,aes(x=evoln,y=GR))+
+  geom_boxplot(aes(fill=HTtolerance),position="dodge2")+
+  scale_colour_manual(values=c("#009E73","#E69F00"),
+                    breaks=c("Resistant","Non resistant"),labels = c("Resistant","Non resistant"))+
+  geom_hline(yintercept = 0)+
+  #scale_y_continuous(expression("Growth rate (d"^"-1"*")"))+
+  #scale_x_discrete(breaks=c("Control","L1","5"),
+                      #labels=c("Control", "Evolved 31 \n High N","Evolved 31 \n Low N"))+
+  scale_y_continuous(expression(""))+
+  scale_x_discrete(breaks=c("Control","L1","5"),
+                      labels=c("", "",""))+
+  xlab("")+
+  #ggtitle("c) Growth rate 34ºC. 100 generations")+
+  #coord_cartesian(ylim = c(-0.5, 1.5))+
+  #facet_wrap(~generations,scales="free_y",ncol=2,labeller=Panel_labels)+
+  scale_fill_manual(values=c("skyblue2","#d7191c"), breaks=c("Resistant","Non resistant"))+
+  theme_bw()+
+  theme(strip.background = element_blank(), text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank())
+
+
+ #plot export
+png(filename = "Boxplot_GR_34C_100G.png",units = "mm",res = 300, height = 100, width=150) 
+
+boxplot100G 
+
+dev.off() 
+
+boxplot100G 
+
+#test significant difference between tolerant strains at high and lo N at 100 generations. t-test
+
+resistant_lines_GR<-filter(Data100G,Data100G$HTtolerance=="Resistant")
+t.test(resistant_lines_GR$GR~resistant_lines_GR$evoln)
+
+
+##200Generations
+
+Data200G<-filter(All.data,generations=="200 generations")
+Data200G$evoln <- factor(Data200G$evoln,levels = c("Control","L1","5"),ordered = TRUE) #for ordering boxes
+
+boxplot200G<-ggplot(Data200G,aes(x=evoln,y=GR))+
+  geom_boxplot(aes(fill=HTtolerance),position="dodge2")+
+  scale_colour_manual(values=c("#009E73","#E69F00"),
+                    breaks=c("Resistant","Non resistant"),labels = c("Resistant","Non resistant"))+
+  geom_hline(yintercept = 0)+
+  #scale_y_continuous(expression("Growth rate (d"^"-1"*")"))+
+  #scale_x_discrete(breaks=c("Control","L1","5"),
+                      #labels=c("Control", "Evolved 31 \n High N","Evolved 31 \n Low N"))+
+  scale_y_continuous(expression(""),limits = c(-0.5,1.4))+
+  scale_x_discrete(breaks=c("Control","L1","5"),
+                      labels=c("", "",""))+
+  xlab("")+
+  #ggtitle("d) Growth rate 34ºC. 200 generations")+
+  #coord_cartesian(ylim = c(-0.5, 1.5))+
+  #facet_wrap(~generations,scales="free_y",ncol=2,labeller=Panel_labels)+
+  scale_fill_manual(values=c("skyblue2","#d7191c"), breaks=c("Resistant","Non resistant"))+
+  theme_bw()+
+  theme(strip.background = element_blank(), text=element_text(size=15, family = "Times New Roman"), legend.position="none",legend.title=element_blank(),panel.grid.minor=element_blank(),panel.grid.major=element_blank())
+
+
+ #plot export
+png(filename = "Boxplot_GR_34C_200G.png",units = "mm",res = 300, height = 100, width=150) 
+
+boxplot200G 
+
+dev.off() 
+
+boxplot200G 
+```

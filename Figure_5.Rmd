@@ -1,0 +1,96 @@
+---
+title: "Figure 5"
+author: "Maria Aranguren-Gassis, Colin Kremer"
+date: "22/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+
+library(ggplot2)
+library(bbmle)
+library(mgcv)
+require(ggplot2)
+require(xlsx) 
+require(dplyr) 
+require(tidyr)
+require(magrittr)
+
+```
+##GAM fitting for 34 degrees resistant lines and controls C:N ratios
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+#data upload
+dat<-read.xlsx2("./CN_Ratios_34Lines.xlsx",1,colClasses = c("numeric","numeric","numeric","character"))
+
+# GAM model fit:
+#	This includes a (roughly) 4th order smoothed relationship between 
+#	C:N and temperature, allows this shape to differ among treatments, 
+#	and also estimates a separate intercept between treatments.
+gm2<-gam(cn.ratio.porc~s(temperature,by=treatment,k=4)+treatment,data=dat) #s specifies the smoothers, in this case the smoother function is 
+#for temperature.k controls the number of degrees of freedom, the more degrees of freedom themore flexible is the curve, but it can be to 
+#much that you see the knots. I've tried with K between 3 and 7 (the limits allowed), significances doesn't change, and even r2 increase to 0.4, the curve looks 
+#awfull, so I think k=4 is right. Gaussian location-scale model where the mean and the standard deviation are both modelled using smooth linear predictors.
+
+# statistical output:
+summary(gm2)
+
+#Delete data at 34 and 35ºC for plotting
+dat.reduced<-filter(dat, temperature<33)
+gm3<-gam(cn.ratio.porc~s(temperature,by=treatment,k=4)+treatment,data=dat.reduced)
+summary(gm3)
+```
+#Figure 5
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE} 
+# extract results of model fit for plotting:
+ndat3<-expand.grid(temperature=seq(20,32),treatment=c('Evolved','Control'))
+ndat3<-ndat3[!(ndat3$treatment=='Control' & ndat3$temperature>32),]
+pd3<-predict(gm3,newdata=ndat3,type='response',se=T)
+ndat3$cn.ratio.porc<-pd3$fit
+ndat3$se.fit<-pd3$se.fit
+ndat3$CI<-pd3$se.fit*1.96
+
+
+# generate plot:
+
+
+PlotSE_reduced<-ggplot(ndat3%>% mutate(treatment=as.factor(treatment)),aes(x=temperature,y=cn.ratio.porc,treatment,color=treatment, shape=treatment, linetype=treatment, fill=treatment))+
+  geom_point(data=dat.reduced, size=3, alpha=0.7)+
+  geom_line(size=1)+
+  scale_linetype_manual(values=c(5,1),
+                    breaks=c("Evolved","Control"),
+                    labels=c("Evolved","Control"))+
+    scale_colour_manual(values=c("black","#009E73"),
+                    breaks=c("Evolved","Control"),
+                    labels=c("Evolved","Control"))+
+    scale_fill_manual(values=c("black","#009E73"),
+                    breaks=c("Evolved","Control"),
+                    labels=c("Evolved","Control"))+
+    scale_shape_manual(values=c(21,22),
+                    breaks=c("Evolved","Control"),
+                    labels=c("Evolved","Control"))+
+  geom_line(aes(y=cn.ratio.porc-se.fit,colour=treatment),linetype=3)+
+  geom_line(aes(y=cn.ratio.porc+se.fit,colour=treatment),linetype=3)+
+  scale_x_continuous(expression("Temperature ( "^degree*"C)"),limits=c(20,32.5))+
+  scale_y_continuous('C:N ratio')+
+  theme_bw()+
+    theme(panel.grid.minor=element_blank(),panel.grid.major=element_blank(),panel.background=element_rect(fill="white"),legend.position="none",legend.title=element_blank(), text=element_text(size=18, family = "Times New Roman"))+
+  #theme(legend.position="bottom")+ #legend on the bottom
+  #theme(legend.position="none")+ #to remove the legend
+  #theme(legend.title=element_blank())+ #to erase the legend title
+  theme(axis.line.x = element_line(color="black", size = 0.3),
+        axis.line.y = element_line(color="black", size = 0.3)) 
+  
+  
+  
+
+
+#exporting plot
+png(filename = "CNRatios_GAM_SE_color_reduced.png",units = "mm",res = 600, height = 120, width=183) 
+PlotSE_reduced
+dev.off() 
+PlotSE_reduced
+```
